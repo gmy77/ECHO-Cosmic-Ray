@@ -1,0 +1,12 @@
+/target/
+**/*.rs.bk
+/dist/
+.DS_Store
+Thumbs.db
+*.pdb
+.env
+.env.*
+*.key
+*.pem
+*credentials*
+*secret*

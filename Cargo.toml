@@ -1,0 +1,12 @@
+[package]
+name = "cosmic-ray-dashboard"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+windows-reactor = "0.100"
+ureq = { version = "2.12", features = ["gzip"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 2
