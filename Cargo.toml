@@ -1,12 +1,17 @@
 [package]
 name = "cosmic-ray-dashboard"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+description = "ECHO Cosmic Ray · radiazione cosmica e meteo spaziale"
+build = "build.rs"
 
 [dependencies]
 windows-reactor = "0.100"
 ureq = { version = "2.12", features = ["gzip"] }
 serde_json = "1"
+
+[build-dependencies]
+winresource = "0.1"
 
 [profile.release]
 opt-level = 2
