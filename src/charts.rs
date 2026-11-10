@@ -219,8 +219,16 @@ pub fn plot(
     Canvas::new().width(width).height(height).keyed_children(items)
 }
 
-/// Barre verticali per l'indice Kp, con scala 0..9 e colori per livello.
-pub fn kp_bars(width: f64, height: f64, points: &[(String, f64)]) -> View {
+/// Barra Kp: etichetta (vuota = nessuna), valore, previsto (disegnato tenue).
+pub struct KpBar {
+    pub label: String,
+    pub kp: f64,
+    pub predicted: bool,
+}
+
+/// Barre verticali per l'indice Kp, con scala 0..9, colori per livello e una linea
+/// verticale prima della prima barra prevista ("adesso").
+pub fn kp_bars(width: f64, height: f64, points: &[KpBar]) -> View {
     let inner_w = (width - PAD_L - PAD_R).max(10.0);
     let inner_h = (height - PAD_T - PAD_B).max(10.0);
     let mut items: Vec<KeyedView> = Vec::new();
@@ -261,28 +269,56 @@ pub fn kp_bars(width: f64, height: f64, points: &[(String, f64)]) -> View {
 
     let slot = inner_w / points.len() as f64;
     let bar_w = (slot * 0.62).max(2.0);
-    for (index, (label, kp)) in points.iter().enumerate() {
+    let mut now_drawn = false;
+    for (index, bar) in points.iter().enumerate() {
         let cx = PAD_L + slot * (index as f64 + 0.5);
-        let kp = kp.clamp(0.0, 9.0);
+        let kp = bar.kp.clamp(0.0, 9.0);
         let h = inner_h * (kp / 9.0);
         let (r, g, b) = crate::model::kp_color(kp);
+        if bar.predicted && !now_drawn && index > 0 {
+            now_drawn = true;
+            let xx = cx - slot / 2.0;
+            items.push(KeyedView::new(
+                key,
+                Line::new()
+                    .x1(xx)
+                    .x2(xx)
+                    .y1(PAD_T - 6.0)
+                    .y2(PAD_T + inner_h)
+                    .stroke(Color::rgb(148, 163, 184))
+                    .stroke_thickness(1.0),
+            ));
+            key += 1;
+            items.push(KeyedView::new(
+                key,
+                TextBlock::new()
+                    .text("previsione →")
+                    .font_size(10.0)
+                    .foreground(Color::rgb(148, 163, 184))
+                    .canvas_left(xx + 4.0)
+                    .canvas_top(PAD_T - 12.0)
+                    .width(90.0),
+            ));
+            key += 1;
+        }
+        let alpha = if bar.predicted { 95 } else { 255 };
         items.push(KeyedView::new(
             key,
             Rectangle::new()
                 .width(bar_w)
                 .height(h.max(1.5))
-                .fill(Color::rgb(r, g, b))
+                .fill(Color::argb(alpha, r, g, b))
                 .radius_x(2.0)
                 .radius_y(2.0)
                 .canvas_left(cx - bar_w / 2.0)
                 .canvas_top(PAD_T + inner_h - h.max(1.5)),
         ));
         key += 1;
-        if index % 4 == 0 {
+        if !bar.label.is_empty() {
             items.push(KeyedView::new(
                 key,
                 TextBlock::new()
-                    .text(label.clone())
+                    .text(bar.label.clone())
                     .font_size(10.0)
                     .foreground(LABEL)
                     .canvas_left((cx - 18.0).clamp(0.0, (width - 40.0).max(0.0)))
