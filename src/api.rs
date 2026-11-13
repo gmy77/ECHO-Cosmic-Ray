@@ -166,6 +166,36 @@ fn http_json(url: &str) -> Result<serde_json::Value, String> {
     serde_json::from_str(&body).map_err(|e| format!("JSON non valido ({e})"))
 }
 
+/// Proxy Cloudflare per NMDB: l'host diretto non è raggiungibile da tutte le reti,
+/// e il reader pubblico è lento. Il Worker restituisce la sola tabella ASCII.
+const NMDB_PROXY: &str = "https://nmdb-proxy.gimmy077.workers.dev";
+
+/// Riscrive un URL NMDB sul proxy, se l'host è quello atteso.
+fn proxied_url(url: &str) -> Option<String> {
+    url.strip_prefix("https://www.nmdb.eu")
+        .map(|rest| format!("{NMDB_PROXY}{rest}"))
+}
+
+/// Scarica un URL NMDB: prima il proxy, poi la connessione diretta.
+fn nmdb_get(url: &str) -> Result<String, String> {
+    let mut errors: Vec<String> = Vec::new();
+    if let Some(proxied) = proxied_url(url) {
+        match http_get(&proxied) {
+            Ok(body) if !body.trim().is_empty() => return Ok(body),
+            Ok(_) => errors.push("proxy vuoto".to_string()),
+            Err(error) => errors.push(format!("proxy: {error}")),
+        }
+    }
+    match http_get(url) {
+        Ok(body) if !body.trim().is_empty() => Ok(body),
+        Ok(_) => Err("risposta vuota".to_string()),
+        Err(error) => {
+            errors.push(format!("diretto: {error}"));
+            Err(errors.join(" · "))
+        }
+    }
+}
+
 /// Messaggio d'errore compatto, senza l'URL completo.
 fn short_error(e: ureq::Error) -> String {
     match e {
@@ -471,12 +501,12 @@ fn fetch_one(req: Request) -> Result<Payload, String> {
         }
     };
     match req.feed {
-        Feed::Oulu => Ok(Payload::Nmdb(nonempty(parse_nmdb(&http_get(&nmdb_url("OULU", nmdb_window))?))?)),
-        Feed::Rome => Ok(Payload::Nmdb(nonempty(parse_nmdb(&http_get(&nmdb_url("ROME", nmdb_window))?))?)),
+        Feed::Oulu => Ok(Payload::Nmdb(nonempty(parse_nmdb(&nmdb_get(&nmdb_url("OULU", nmdb_window))?))?)),
+        Feed::Rome => Ok(Payload::Nmdb(nonempty(parse_nmdb(&nmdb_get(&nmdb_url("ROME", nmdb_window))?))?)),
         Feed::Month => {
             let window = "last_days=30&last_label=days_label&tresolution=60";
-            let oulu = parse_nmdb(&http_get(&nmdb_url("OULU", window))?);
-            let rome = parse_nmdb(&http_get(&nmdb_url("ROME", window)).unwrap_or_default());
+            let oulu = parse_nmdb(&nmdb_get(&nmdb_url("OULU", window))?);
+            let rome = parse_nmdb(&nmdb_get(&nmdb_url("ROME", window)).unwrap_or_default());
             Ok(Payload::Month { oulu: nonempty(oulu)?, rome })
         }
         Feed::Kp => {
@@ -542,8 +572,7 @@ fn fetch_one(req: Request) -> Result<Payload, String> {
 }
 
 /// Scarica in parallelo le sorgenti richieste.
-pub fn fetch(requests: &[Request]) -> Vec<FetchResult> {
-    std::thread::scope(|scope| {
+pub fn fetch(requests: &[Request]) -> Vec<FetchResult> {    std::thread::scope(|scope| {
         let handles: Vec<_> = requests
             .iter()
             .map(|req| {
@@ -564,6 +593,259 @@ pub fn fetch(requests: &[Request]) -> Vec<FetchResult> {
             })
             .collect()
     })
+}
+
+// ---------------------------------------------------------------------------
+// Atlante: rete completa NMDB (ultimi 7 giorni, passo orario)
+// ---------------------------------------------------------------------------
+
+/// URL NMDB per un blocco di stazioni: un'ora di risoluzione, 7 giorni,
+/// conteggi corretti per efficienza, tabella ASCII.
+fn atlas_url(codes: &[&str]) -> String {
+    let mut url = String::from("https://www.nmdb.eu/nest/draw_graph.php?formchk=1&output=ascii");
+    for code in codes {
+        url.push_str("&stations[]=");
+        url.push_str(code);
+    }
+    url.push_str("&tabchoice=ori&dtype=corr_for_efficiency&tresolution=60&yunits=0&wget=1");
+    url.push_str("&date_choice=last&last_days=7&last_label=days_label");
+    url
+}
+
+/// Un codice stazione NMDB: quattro caratteri maiuscoli o cifre.
+fn is_station_code(token: &str) -> bool {
+    token.len() == 4
+        && token
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+}
+
+/// Intestazione delle colonne: riga di soli codici; in mancanza, la riga
+/// `# STATION: A, B, ...`. Il reader appiattisce le righe con ` # `.
+fn atlas_columns(text: &str) -> Vec<String> {
+    let flat = text.replace(" # ", "\n");
+    let cut = flat
+        .find(|c: char| c.is_ascii_digit())
+        .unwrap_or(flat.len());
+    let prefix = &flat[..cut];
+    let mut head: Vec<String> = Vec::new();
+    for line in prefix.lines() {
+        let tokens: Vec<&str> = line
+            .trim()
+            .trim_start_matches('#')
+            .split(|c: char| c.is_whitespace() || c == ',')
+            .filter(|t| !t.is_empty())
+            .collect();
+        if tokens.len() >= 2 && tokens.iter().all(|t| is_station_code(t)) {
+            head = tokens.iter().map(|t| t.to_string()).collect();
+        }
+        if let Some(pos) = line.find("STATION:") {
+            let rest = &line[pos + 8..];
+            let rest = rest.split('#').next().unwrap_or(rest);
+            let codes: Vec<String> = rest
+                .split(',')
+                .map(|c| c.trim().to_string())
+                .filter(|c| is_station_code(c))
+                .collect();
+            if head.is_empty() && !codes.is_empty() {
+                head = codes;
+            }
+        }
+    }
+    head
+}
+
+/// Posizioni di tutti i timestamp `AAAA-MM-GG HH:MM:SS` nel testo.
+fn atlas_stamps(text: &str) -> Vec<(usize, i64)> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    if bytes.len() < 19 {
+        return out;
+    }
+    let digit = |b: u8| b.is_ascii_digit();
+    let mut i = 0;
+    while i + 19 <= bytes.len() {
+        let matched = digit(bytes[i])
+            && digit(bytes[i + 1])
+            && digit(bytes[i + 2])
+            && digit(bytes[i + 3])
+            && bytes[i + 4] == b'-'
+            && digit(bytes[i + 5])
+            && digit(bytes[i + 6])
+            && bytes[i + 7] == b'-'
+            && digit(bytes[i + 8])
+            && digit(bytes[i + 9])
+            && (bytes[i + 10] == b' ' || bytes[i + 10] == b'T')
+            && digit(bytes[i + 11])
+            && digit(bytes[i + 12])
+            && bytes[i + 13] == b':'
+            && digit(bytes[i + 14])
+            && digit(bytes[i + 15])
+            && bytes[i + 16] == b':'
+            && digit(bytes[i + 17])
+            && digit(bytes[i + 18]);
+        if matched {
+            if let Some(epoch) = parse_epoch(&text[i..i + 19]) {
+                out.push((i, epoch));
+                i += 19;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Righe `timestamp -> valori` di una risposta multilinea o appiattita.
+fn parse_atlas_rows(text: &str, columns: usize) -> Vec<(i64, Vec<Option<f64>>)> {
+    let stamps = atlas_stamps(text);
+    let mut out = Vec::with_capacity(stamps.len());
+    for (index, (offset, epoch)) in stamps.iter().enumerate() {
+        let end = stamps
+            .get(index + 1)
+            .map(|(next, _)| *next)
+            .unwrap_or(text.len());
+        let row = &text[offset + 19..end];
+        let values: Vec<Option<f64>> = row
+            .split(';')
+            .skip(1)
+            .take(columns)
+            .map(|token| {
+                let token = token.split('#').next().unwrap_or("").trim();
+                if token.is_empty() || token.eq_ignore_ascii_case("null") {
+                    None
+                } else {
+                    token
+                        .replace(',', ".")
+                        .parse::<f64>()
+                        .ok()
+                        .filter(|v| v.is_finite() && *v > 0.0)
+                }
+            })
+            .collect();
+        if values.len() == columns {
+            out.push((*epoch, values));
+        }
+    }
+    out
+}
+
+fn atlas_text(url: &str, proxy: bool) -> Result<String, String> {
+    let request = if proxy {
+        agent()
+            .get(&format!("https://r.jina.ai/{url}"))
+            .set("X-Return-Format", "text")
+    } else {
+        agent().get(url)
+    };
+    let response = request.call().map_err(short_error)?;
+    response.into_string().map_err(|e| e.to_string())
+}
+
+/// Scarica un blocco di stazioni: prima proxy/diretto NMDB, poi il reader.
+fn fetch_atlas_block(codes: &[&str]) -> Result<(Vec<String>, Vec<(i64, Vec<Option<f64>>)>), String> {
+    let url = atlas_url(codes);
+    let parsed = |text: &str| -> Option<(Vec<String>, Vec<(i64, Vec<Option<f64>>)>)> {
+        let mut columns = atlas_columns(text);
+        if columns.is_empty() {
+            columns = codes.iter().map(|c| c.to_string()).collect();
+        }
+        let rows = parse_atlas_rows(text, columns.len());
+        if rows.is_empty() {
+            None
+        } else {
+            Some((columns, rows))
+        }
+    };
+    let mut last_error = match nmdb_get(&url) {
+        Ok(text) => match parsed(&text) {
+            Some(block) => return Ok(block),
+            None => "risposta NMDB senza tabella".to_string(),
+        },
+        Err(error) => error,
+    };
+    for attempt in 0..3 {
+        match atlas_text(&url, true) {
+            Ok(text) => match parsed(&text) {
+                Some(block) => return Ok(block),
+                None => last_error = "risposta del reader senza tabella".to_string(),
+            },
+            Err(error) => last_error = error,
+        }
+        std::thread::sleep(Duration::from_secs(8 * (attempt + 1) as u64));
+    }
+    Err(last_error)
+}
+
+/// Scarica la rete completa (7 giorni, passo orario) e la impacchetta nella
+/// stessa griglia binaria degli asset, pronta per `atlas::Dataset`.
+pub fn fetch_atlas_live() -> Result<crate::atlas::Grid, String> {
+    use std::collections::BTreeMap;
+
+    let all: Vec<&str> = crate::atlas::STATIONS.iter().map(|s| s.code).collect();
+    let mut per_station: BTreeMap<&str, BTreeMap<i64, f64>> = BTreeMap::new();
+    let mut last_error = String::from("nessun blocco scaricato");
+    let mut blocks = 0;
+    for chunk in all.chunks(14) {
+        match fetch_atlas_block(chunk) {
+            Ok((columns, rows)) => {
+                blocks += 1;
+                for (epoch, values) in rows {
+                    for (code, value) in columns.iter().zip(values) {
+                        let Some(&known) = all.iter().find(|c| **c == code.as_str()) else {
+                            continue;
+                        };
+                        if let Some(value) = value {
+                            per_station.entry(known).or_default().insert(epoch, value);
+                        }
+                    }
+                }
+            }
+            Err(error) => last_error = error,
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    if blocks == 0 {
+        return Err(last_error);
+    }
+    let mut times: Vec<i64> = Vec::new();
+    for series in per_station.values() {
+        for &t in series.keys() {
+            times.push(t);
+        }
+    }
+    times.sort_unstable();
+    times.dedup();
+    if times.len() < 24 {
+        return Err(format!("serie troppo corta ({} ore)", times.len()));
+    }
+    let t0 = times[0];
+    let step = 3600;
+    let steps = ((times[times.len() - 1] - t0) / step + 1) as usize;
+    let mut columns = Vec::new();
+    let mut stations = Vec::new();
+    for (index, station) in crate::atlas::STATIONS.iter().enumerate() {
+        if per_station.contains_key(station.code) {
+            columns.push(index);
+            stations.push(station.code);
+        }
+    }
+    if columns.len() < 20 {
+        return Err(format!("solo {} stazioni", columns.len()));
+    }
+    let mut values = vec![f32::NAN; steps * columns.len()];
+    for (col, code) in stations.iter().enumerate() {
+        let Some(series) = per_station.get(code) else {
+            continue;
+        };
+        for (&time, &value) in series {
+            let step_index = ((time - t0) / step) as usize;
+            if step_index < steps {
+                values[step_index * columns.len() + col] = value as f32;
+            }
+        }
+    }
+    Ok(crate::atlas::Grid { t0, step, steps, columns, values })
 }
 
 #[cfg(test)]
@@ -605,6 +887,40 @@ mod tests {
         let out = drop_outliers(s);
         assert_eq!(out.len(), 9);
         assert!(out.iter().all(|p| p.1 < 1_000.0));
+    }
+
+    #[test]
+    fn tabella_atlante() {
+        let text = "# STATION: OULU, ROME\n# start_date_time 1HCOR_E 1HCOR_E\n\
+                    2026-11-10 06:00:00;100.6;50.2\n2026-11-10 07:00:00;101.0; null \n";
+        assert_eq!(atlas_columns(text), vec!["OULU", "ROME"]);
+        let rows = parse_atlas_rows(text, 2);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].1[0], Some(100.6));
+        assert_eq!(rows[1].1[1], None);
+        // il reader appiattisce tutto su una riga con i separatori " # "
+        let flat = "# STATION: OULU # 2026-11-10 06:00:00;100.6 # 2026-11-10 07:00:00;101.0";
+        let rows = parse_atlas_rows(flat, 1);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].1[0], Some(101.0));
+    }
+
+    #[test]
+    fn url_atlante() {
+        let url = atlas_url(&["OULU", "ROME"]);
+        assert!(url.contains("stations[]=OULU&stations[]=ROME"));
+        assert!(url.contains("last_days=7"));
+        assert!(url.contains("tresolution=60"));
+    }
+
+    #[test]
+    fn proxy_solo_per_nmdb() {
+        let nmdb = nmdb_url("OULU", "last_days=1&last_label=days_label");
+        let proxied = proxied_url(&nmdb).expect("URL NMDB riconosciuto");
+        assert!(proxied.starts_with(NMDB_PROXY));
+        assert!(proxied.ends_with("stations[]=OULU&last_days=1&last_label=days_label"));
+        assert!(proxied_url("https://services.swpc.noaa.gov/json/x.json").is_none());
+        assert!(proxied_url(&atlas_url(&["OULU"])).is_some());
     }
 
     #[test]

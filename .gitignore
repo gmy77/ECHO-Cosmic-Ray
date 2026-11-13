@@ -1,6 +1,8 @@
 /target/
 **/*.rs.bk
 /dist/
+/tools/__pycache__/
+/tools/*.log
 .DS_Store
 Thumbs.db
 *.pdb

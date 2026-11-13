@@ -2,6 +2,9 @@
 
 mod alerts;
 mod api;
+mod atlas;
+mod atlas_draw;
+mod atlas_ui;
 mod charts;
 mod model;
 mod state;
@@ -13,21 +16,21 @@ use model::*;
 use state::Data;
 use windows_reactor::*;
 
-const BG: Color = Color::rgb(7, 11, 16);
-const CARD_BG: Color = Color::rgb(14, 21, 29);
-const CARD_BORDER: Color = Color::rgb(30, 41, 53);
-const TEXT: Color = Color::rgb(226, 232, 240);
-const SOFT: Color = Color::rgb(203, 213, 225);
-const MUTED: Color = Color::rgb(124, 139, 156);
-const CYAN: Color = Color::rgb(34, 211, 238);
-const AMBER: Color = Color::rgb(245, 158, 11);
-const VIOLET: Color = Color::rgb(167, 139, 250);
-const GREEN: Color = Color::rgb(52, 211, 153);
-const ROSE: Color = Color::rgb(248, 113, 113);
-const SLATE: Color = Color::rgb(100, 116, 139);
+pub(crate) const BG: Color = Color::rgb(7, 11, 16);
+pub(crate) const CARD_BG: Color = Color::rgb(14, 21, 29);
+pub(crate) const CARD_BORDER: Color = Color::rgb(30, 41, 53);
+pub(crate) const TEXT: Color = Color::rgb(226, 232, 240);
+pub(crate) const SOFT: Color = Color::rgb(203, 213, 225);
+pub(crate) const MUTED: Color = Color::rgb(124, 139, 156);
+pub(crate) const CYAN: Color = Color::rgb(34, 211, 238);
+pub(crate) const AMBER: Color = Color::rgb(245, 158, 11);
+pub(crate) const VIOLET: Color = Color::rgb(167, 139, 250);
+pub(crate) const GREEN: Color = Color::rgb(52, 211, 153);
+pub(crate) const ROSE: Color = Color::rgb(248, 113, 113);
+pub(crate) const SLATE: Color = Color::rgb(100, 116, 139);
 
 const APP_ICO: &[u8] = include_bytes!("../assets/app.ico");
-const WORLD_MAP: &[u8] = include_bytes!("../assets/worldmap.png");
+pub(crate) const WORLD_MAP: &[u8] = include_bytes!("../assets/worldmap.png");
 const LOGO_NMDB: &[u8] = include_bytes!("../assets/credits/nmdb.png");
 const LOGO_OULU: &[u8] = include_bytes!("../assets/credits/oulu.png");
 const LOGO_INAF: &[u8] = include_bytes!("../assets/credits/inaf.png");
@@ -76,17 +79,24 @@ fn downsample<T: Copy>(items: &[T], max: usize) -> Vec<T> {
     out
 }
 
-fn color3((r, g, b): (u8, u8, u8)) -> Color {
+pub(crate) fn color3((r, g, b): (u8, u8, u8)) -> Color {
     Color::rgb(r, g, b)
 }
 
 /// Numero con la virgola decimale (stile italiano).
-fn it(value: f64, decimals: usize) -> String {
+pub(crate) fn it(value: f64, decimals: usize) -> String {
     format!("{value:.decimals$}").replace('.', ",")
 }
 
-fn it_signed(value: f64, decimals: usize) -> String {
+pub(crate) fn it_signed(value: f64, decimals: usize) -> String {
     format!("{value:+.decimals$}").replace('.', ",")
+}
+
+/// Pagina visibile nella finestra.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Page {
+    Dashboard,
+    Atlas,
 }
 
 struct Dashboard {
@@ -102,6 +112,8 @@ struct Dashboard {
     map: Option<(i64, EncodedImage)>,
     show_ack: bool,
     map_big: bool,
+    page: Page,
+    atlas: atlas_ui::AtlasState,
 }
 
 #[derive(Clone)]
@@ -117,6 +129,15 @@ enum Message {
     ToggleMap,
     OpenDataDir,
     TestToast,
+    SetPage(Page),
+    AtlasSource(Option<usize>),
+    AtlasSelect(Option<usize>),
+    AtlasScrub(f64),
+    AtlasTogglePlay,
+    AtlasSpeed(Option<usize>),
+    AtlasTick,
+    AtlasLive(Box<Result<atlas::Grid, String>>),
+    AtlasRefresh,
 }
 
 impl Component for Dashboard {
@@ -137,6 +158,8 @@ impl Component for Dashboard {
             map: None,
             show_ack: true,
             map_big: false,
+            page: Page::Dashboard,
+            atlas: atlas_ui::AtlasState::new(),
         };
         dashboard.refresh_map();
         dashboard.start_fetch(context, true);
@@ -151,6 +174,9 @@ impl Component for Dashboard {
             Message::Tick => {
                 schedule_tick(context);
                 self.start_fetch(context, false);
+                if self.page == Page::Atlas {
+                    self.fetch_atlas_live(context, false);
+                }
             }
             Message::Refresh => {
                 if self.in_flight {
@@ -203,6 +229,53 @@ impl Component for Dashboard {
                 "Notifica di prova",
                 "Le notifiche funzionano: riceverai un avviso per tempeste, brillamenti, protoni, cali di Forbush e GLE.",
             ),
+            Message::SetPage(page) => {
+                if self.page != page {
+                    self.page = page;
+                    self.atlas.set_selected(None);
+                    if page == Page::Atlas {
+                        self.fetch_atlas_live(context, false);
+                    }
+                }
+            }
+            Message::AtlasSource(index) => {
+                if let Some(index) = index {
+                    self.atlas.set_source(index);
+                }
+            }
+            Message::AtlasSelect(index) => self.atlas.set_selected(index),
+            Message::AtlasScrub(value) => self.atlas.scrub(value),
+            Message::AtlasTogglePlay => {
+                self.atlas.toggle_play();
+                if self.atlas.playing {
+                    schedule_atlas_tick(context);
+                }
+            }
+            Message::AtlasSpeed(index) => {
+                if let Some(index) = index {
+                    self.atlas.speed = index.min(atlas_ui::SPEEDS.len() - 1);
+                }
+            }
+            Message::AtlasTick => {
+                if self.atlas.advance() {
+                    schedule_atlas_tick(context);
+                }
+            }
+            Message::AtlasLive(result) => {
+                self.atlas.live_in_flight = false;
+                match *result {
+                    Ok(grid) => {
+                        let dataset = atlas::Dataset::from_grid(grid, true, None);
+                        let status = format!("download {} UTC", api::hhmm(self.now));
+                        self.atlas.live_error = None;
+                        self.atlas.set_live(dataset, status);
+                    }
+                    Err(error) => {
+                        self.atlas.live_error = Some(error);
+                    }
+                }
+            }
+            Message::AtlasRefresh => self.fetch_atlas_live(context, true),
             Message::SetAltitude(None) | Message::SetPlace(None) => {}
             Message::SetAltitude(Some(_)) | Message::SetPlace(Some(_)) => {}
         }
@@ -224,9 +297,50 @@ impl Component for Dashboard {
                 }),
         );
 
+        let body: View = match self.page {
+            Page::Dashboard => self.dashboard_page(context),
+            Page::Atlas => self.atlas_page(context),
+        };
         let content = StackPanel::new()
             .spacing(16.0)
             .margin(Thickness::new(24.0, 18.0, 24.0, 26.0))
+            .children((self.nav(context), body));
+
+        Border::new().background(BG).content(
+            ScrollViewer::new()
+                .horizontal_scroll_bar_visibility(ScrollBarVisibility::Disabled)
+                .content(content),
+        )
+    }
+}
+
+impl Dashboard {
+    /// Barra delle pagine: dashboard classica e atlante.
+    fn nav(&self, context: &mut ViewContext<Self>) -> View {
+        let tab = |label: &str, page: Page| -> View {
+            let active = self.page == page;
+            let mut button = Button::new().style(if active {
+                ButtonStyle::Accent
+            } else {
+                ButtonStyle::Subtle
+            });
+            if !active {
+                button = button.on_click(context.message(Message::SetPage(page)));
+            }
+            button.content(label.to_string())
+        };
+        StackPanel::new()
+            .orientation(Orientation::Horizontal)
+            .spacing(8.0)
+            .children((
+                tab("Dashboard", Page::Dashboard),
+                tab("Atlante dei raggi cosmici", Page::Atlas),
+            ))
+    }
+
+    fn dashboard_page(&self, context: &mut ViewContext<Self>) -> View {
+        StackPanel::new()
+            .spacing(16.0)
             .children((
                 self.header(context),
                 self.events_strip(),
@@ -237,13 +351,38 @@ impl Component for Dashboard {
                 self.row_altitude_map(context),
                 self.credits(context),
                 self.footer(context),
-            ));
+            ))
+    }
 
-        Border::new().background(BG).content(
-            ScrollViewer::new()
-                .horizontal_scroll_bar_visibility(ScrollBarVisibility::Disabled)
-                .content(content),
-        )
+    fn atlas_page(&self, context: &mut ViewContext<Self>) -> View {
+        let callbacks = atlas_ui::AtlasCallbacks {
+            source: context.callback(Message::AtlasSource),
+            select_station: context.callback(Message::AtlasSelect),
+            scrub: context.callback(Message::AtlasScrub),
+            toggle_play: context.message(Message::AtlasTogglePlay),
+            speed: context.callback(Message::AtlasSpeed),
+            refresh: context.message(Message::AtlasRefresh),
+            help_map: context.message(Message::ToggleHelp("atl-map".into())),
+            help_multiples: context.message(Message::ToggleHelp("atl-multiples".into())),
+            help_solar: context.message(Message::ToggleHelp("atl-solar".into())),
+        };
+        self.atlas.page(&callbacks, &self.help)
+    }
+
+    /// Scarica la rete completa: all'apertura della pagina e poi ogni 30 minuti.
+    fn fetch_atlas_live(&mut self, context: &ComponentContext<Self>, force: bool) {
+        if self.atlas.live_in_flight {
+            return;
+        }
+        let now = api::now_epoch();
+        if !force && self.atlas.live_last != 0 && now - self.atlas.live_last < 1800 {
+            return;
+        }
+        self.atlas.live_last = now;
+        self.atlas.live_in_flight = true;
+        context.spawn_background(|_cancel| {
+            Message::AtlasLive(Box::new(api::fetch_atlas_live()))
+        });
     }
 }
 
@@ -251,6 +390,21 @@ fn schedule_tick(context: &ComponentContext<Dashboard>) {
     context.spawn_background(|_cancel| {
         std::thread::sleep(std::time::Duration::from_secs(TICK_S));
         Message::Tick
+    });
+}
+
+/// Un fotogramma dell'animazione dell'atlante (≈8 al secondo). Il compito si
+/// rischedula da `AtlasTick` finché la riproduzione è attiva.
+fn schedule_atlas_tick(context: &ComponentContext<Dashboard>) {
+    context.spawn_background(|cancel| {
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_millis(120) {
+            if cancel.is_cancelled() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        Message::AtlasTick
     });
 }
 
@@ -1571,15 +1725,15 @@ fn cell_v(column: i32, view: View) -> View {
 }
 
 /// Scala un disegno a dimensione fissa sulla larghezza disponibile, mantenendo le proporzioni.
-fn scaled(view: View) -> View {
+pub(crate) fn scaled(view: impl Into<View>) -> View {
     Viewbox::new()
         .stretch(Stretch::Uniform)
         .horizontal_alignment(HorizontalAlignment::Stretch)
         .vertical_alignment(VerticalAlignment::Top)
-        .slot(ViewboxSlot::Child, view)
+        .slot(ViewboxSlot::Child, view.into())
 }
 
-fn help_panel(desc: &str) -> View {
+pub(crate) fn help_panel(desc: &str) -> View {
     Border::new()
         .background(Color::rgb(19, 30, 42))
         .border_brush(Color::rgb(44, 60, 78))
@@ -1604,7 +1758,7 @@ fn help_button(on_toggle: Callback<()>) -> View {
         .tooltip("Che cosa mostra questo pannello")
 }
 
-fn card(title: &str, accent: Color, desc: &str, body: View, open: bool, on_toggle: Callback<()>) -> View {
+pub(crate) fn card(title: &str, accent: Color, desc: &str, body: View, open: bool, on_toggle: Callback<()>) -> View {
     card_with_action(title, accent, desc, body, open, on_toggle, None)
 }
 
@@ -1742,7 +1896,7 @@ fn stat(label: &str, value: String, accent: Color) -> View {
     ))
 }
 
-fn legend_item(color: Color, label: &str) -> View {
+pub(crate) fn legend_item(color: Color, label: &str) -> View {
     StackPanel::new()
         .orientation(Orientation::Horizontal)
         .spacing(6.0)

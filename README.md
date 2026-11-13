@@ -17,6 +17,18 @@ Raccoglie dati pubblici dalla rete dei neutron monitor (NMDB) e da NOAA SWPC, li
 - **Località** selezionabili (Rive d'Arcano, Udine, Milano, Roma, Palermo, Oulu, Singapore) e orario anche in **ora italiana**.
 - **Storico orario in CSV** (separatore `;`, virgola decimale, si apre con Excel).
 
+## Atlante dei raggi cosmici
+
+Una seconda pagina dedicata alla rete mondiale dei neutron monitor, raggiungibile dal pulsante in alto.
+
+- **Mappa animata**: le 42 stazioni NMDB dell'atlante, colorate secondo la variazione percentuale dei conteggi (blu = calo, giallo/rosso = aumento). Passa il mouse su un punto per nome, rigidità di taglio, quota e valore.
+- **Eventi storici riproducibili**: GLE 66 (ottobre 2003), GLE 69 (gennaio 2005), GLE 71 (maggio 2012), GLE 74 (maggio 2024), cali di Forbush del giugno 1991, novembre 2003, giugno 2015, maggio 2024 e aprile 2023. Il cursore temporale scorre la finestra dell'evento (3 giorni a passi di 10 minuti) e la riproduzione automatica ha velocità 0,5×, 1×, 2× e 4×.
+- **Piccoli multipli**: una curva per stazione, ordinate per **rigidità di taglio crescente**, così si vede che le stazioni polari rispondono anche alle particelle meno energetiche mentre quelle equatoriali vedono solo gli eventi più duri. Clicca un pannello per evidenziare la stazione sulla mappa.
+- **Ciclo solare dal 1964**: variazione mensile di Oulu contro il numero di macchie solari SILSO, sullo stesso grafico, per vedere la modulazione solare su scala di sessant'anni.
+- **Dati live**: gli ultimi 7 giorni di tutte le stazioni vengono riscaricati da NMDB all'apertura della pagina e ogni 30 minuti; se la rete non risponde resta l'istantanea incorporata nell'eseguibile, e l'atlante funziona comunque.
+- **Proxy NMDB**: `www.nmdb.eu` non è raggiungibile da tutte le reti, e il reader pubblico `r.jina.ai` è lento e rate-limita. Le richieste passano quindi da un piccolo Cloudflare Worker (`nmdb-proxy.gimmy077.workers.dev`) che inoltra solo `/nest/draw_graph.php`, estrae la tabella ASCII e la tiene in cache 60 secondi. Se il proxy non risponde, l'app prova la connessione diretta e poi il reader.
+- Gli eventi storici e l'istantanea live sono **incorporati nell'exe** in un formato binario compatto (`NMDA`): la pagina si apre senza rete e l'animazione non dipende da download.
+
 ## Cartella dati
 
 `%APPDATA%\ECHO Cosmic Ray\` (pulsante **Cartella dati** in fondo alla finestra):
@@ -67,9 +79,12 @@ cosmic-ray-dashboard/
 │  ├─ state.rs     # serie unite, grandezze derivate (modulazione, Forbush, GLE)
 │  ├─ alerts.rs    # eventi con isteresi, notifiche, impostazioni, storico CSV
 │  ├─ charts.rs    # grafici (assi, serie, barre Kp osservate/previste)
+│  ├─ atlas.rs     # stazioni NMDB, formato binario, eventi, ciclo solare
+│  ├─ atlas_draw.rs# piccoli multipli e ciclo solare disegnati in bitmap RGB
+│  ├─ atlas_ui.rs  # pagina Atlante: stato, mappa animata, pannelli
 │  └─ model.rs     # modello fisico, riferimenti, località, scale NOAA, mappa
-├─ assets/         # icona, mappa, logo delle fonti (assets/credits)
-├─ tools/          # script di supporto (icona, mappa)
+├─ assets/         # icona, mappa, logo delle fonti, dati dell'atlante (assets/atlas)
+├─ tools/          # script di supporto (icona, mappa, dati dell'atlante)
 ├─ build.rs
 └─ Cargo.toml
 ```
@@ -92,6 +107,7 @@ Un grazie sincero a tutti gli enti, gli osservatori e le persone che misurano, c
 - **Osservatorio SVIRCO, INAF-IAPS e Università Roma Tre**, per il neutron monitor di Roma
 - **NOAA Space Weather Prediction Center** ([www.swpc.noaa.gov](https://www.swpc.noaa.gov)), per Kp, GOES, vento solare, F10.7, scale e bollettini
 - **World Data Center for Geomagnetism, Kyoto** ([wdc.kugi.kyoto-u.ac.jp](https://wdc.kugi.kyoto-u.ac.jp)), per l'indice Dst
+- **SILSO, Royal Observatory of Belgium** ([sidc.be/silso](https://www.sidc.be/silso/)), per il numero mensile di macchie solari dell'atlante
 - **Natural Earth** ([naturalearthdata.com](https://www.naturalearthdata.com)), per le linee di costa (dominio pubblico)
 
 Riconoscimento richiesto da NMDB:
