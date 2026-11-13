@@ -67,6 +67,7 @@ pub struct AtlasCallbacks {
     pub help_heatmap: Callback<()>,
     pub help_spectrum: Callback<()>,
     pub help_events: Callback<()>,
+    pub open_dashboard: Callback<()>,
 }
 
 impl AtlasState {
@@ -266,7 +267,7 @@ impl AtlasState {
             );
         };
         StackPanel::new().spacing(16.0).children((
-            self.title(),
+            self.title(callbacks),
             self.controls(callbacks),
             self.map_card(ds, callbacks, help),
             self.heatmap_card(callbacks, help),
@@ -274,10 +275,24 @@ impl AtlasState {
             self.multiples_card(callbacks, help),
             self.events_card(callbacks, help),
             self.solar_card(callbacks, help),
+            self.back_row(callbacks),
         ))
     }
 
-    fn title(&self) -> View {
+    /// Pulsante blu per tornare alla dashboard: la pagina è lunga e in cima
+    /// ci si arriva solo scorrendo.
+    fn back_button(&self, callbacks: &AtlasCallbacks) -> View {
+        blue_button("← Torna alla dashboard", callbacks.open_dashboard.clone())
+    }
+
+    fn back_row(&self, callbacks: &AtlasCallbacks) -> View {
+        StackPanel::new()
+            .orientation(Orientation::Horizontal)
+            .horizontal_alignment(HorizontalAlignment::Stretch)
+            .children((self.back_button(callbacks),))
+    }
+
+    fn title(&self, callbacks: &AtlasCallbacks) -> View {
         let title = StackPanel::new().spacing(1.0).children((
             TextBlock::new()
                 .text("ATLANTE DEI RAGGI COSMICI")
@@ -327,11 +342,14 @@ impl AtlasState {
             ));
 
         Grid::new()
-            .columns([GridLength::STAR, GridLength::Auto])
+            .columns([GridLength::STAR, GridLength::Auto, GridLength::Auto])
             .column_spacing(16.0)
             .children((
                 Border::new().vertical_alignment(VerticalAlignment::Center).content(title),
                 Border::new().vertical_alignment(VerticalAlignment::Center).content(status),
+                Border::new()
+                    .vertical_alignment(VerticalAlignment::Center)
+                    .content(self.back_button(callbacks)),
             ))
     }
 
@@ -904,6 +922,25 @@ impl Default for AtlasState {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Pulsante blu pieno: il tema WinUI non espone il colore del pulsante, quindi
+/// si sovrascrivono le risorse del controllo (sfondo, testo, hover, premuto).
+fn blue_button(label: &str, on_click: Callback<()>) -> View {
+    Button::new()
+        .style(ButtonStyle::Default)
+        .resource_overrides(
+            ResourceOverrides::new()
+                .set("ButtonBackground", Color::rgb(37, 99, 235))
+                .set("ButtonForeground", Color::rgb(255, 255, 255))
+                .set("ButtonBorderBrush", Color::rgb(37, 99, 235))
+                .set("ButtonBackgroundPointerOver", Color::rgb(29, 78, 216))
+                .set("ButtonBorderBrushPointerOver", Color::rgb(29, 78, 216))
+                .set("ButtonBackgroundPressed", Color::rgb(30, 64, 175))
+                .set("ButtonBorderBrushPressed", Color::rgb(30, 64, 175)),
+        )
+        .on_click(on_click)
+        .content(label.to_string())
 }
 
 /// Cella di griglia, allineata a destra.
