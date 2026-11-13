@@ -319,11 +319,16 @@ impl Dashboard {
     fn nav(&self, context: &mut ViewContext<Self>) -> View {
         let tab = |label: &str, page: Page| -> View {
             let active = self.page == page;
-            let mut button = Button::new().style(if active {
-                ButtonStyle::Accent
+            let mut button = if active {
+                Button::new().style(ButtonStyle::Accent)
+            } else if page == Page::Atlas {
+                // l'atlante ha un colore suo, così si vede subito dove andare
+                Button::new()
+                    .style(ButtonStyle::Default)
+                    .resource_overrides(blue_overrides())
             } else {
-                ButtonStyle::Subtle
-            });
+                Button::new().style(ButtonStyle::Subtle)
+            };
             if !active {
                 button = button.on_click(context.message(Message::SetPage(page)));
             }
@@ -682,7 +687,7 @@ impl Dashboard {
             "ATTIVITÀ SOLARE",
             AMBER,
             "In alto l'indice Kp ufficiale a blocchi di 3 ore: ultimi 2 giorni osservati (barre piene) e previsione NOAA dei prossimi 3 giorni (barre tenui). In mezzo il flusso X-ray GOES delle ultime 6 ore in scala logaritmica, con le classi A/B/C/M/X. In basso i valori più recenti di vento solare, densità, campo magnetico, Dst, protoni ≥10 MeV e flusso radio F10.7 (indicatore dell'attività solare: ~70 al minimo, 150-250 al massimo).",
-            self.solar_panel(),
+            self.solar_panel(context),
             self.help.contains("solar"),
             context.message(Message::ToggleHelp("solar".into())),
         );
@@ -785,7 +790,7 @@ impl Dashboard {
         ))
     }
 
-    fn solar_panel(&self) -> View {
+    fn solar_panel(&self, context: &mut ViewContext<Self>) -> View {
         let now = self.now;
         let d = &self.data;
 
@@ -874,12 +879,27 @@ impl Dashboard {
             ));
 
         StackPanel::new().spacing(10.0).children((
-            TextBlock::new().text(kp_title).font_size(10.5).foreground(MUTED),
+            chart_title(
+                &kp_title,
+                self.help.contains("solar-kp"),
+                context.message(Message::ToggleHelp("solar-kp".into())),
+            ),
+            if self.help.contains("solar-kp") {
+                help_panel("Ogni barra è la media dell'indice Kp su 3 ore, la stessa grandezza del pannello qui sopra. Barre piene: valori osservati, ultimi due giorni. Barre tenui a destra della linea verticale: previsione NOAA per i prossimi tre giorni. Scala 0-9 in terzi di unità: sotto 4 il campo è quieto, 4 è attivo, da 5 in su è tempesta geomagnetica (G1 a Kp 5, G3 a 7, G5 a 9). Le etichette sull'asse sono ore UTC.")
+            } else {
+                Border::new().height(0.0).into()
+            },
             scaled(charts::kp_bars(608.0, 118.0, &bars)),
-            TextBlock::new()
-                .text("Flusso X-ray GOES · banda 0,1-0,8 nm · ultime ore")
-                .font_size(10.5)
-                .foreground(MUTED),
+            chart_title(
+                "Flusso X-ray GOES · banda 0,1-0,8 nm · ultime ore",
+                self.help.contains("solar-xray"),
+                context.message(Message::ToggleHelp("solar-xray".into())),
+            ),
+            if self.help.contains("solar-xray") {
+                help_panel("Flusso di raggi X molli misura­to dai satelliti GOES, in watt per metro quadrato, su scala logaritmica: ogni gradino dell'asse è un fattore 10, non una differenza fissa. Le lettere sull'asse verticale sono le classi NOAA: A sotto 1e-7, poi B, C, M e X, che è la più intensa. Le linee orizzontali sono le soglie tra una classe e l'altra, quindi un picco che attraversa una linea è un brillamento di classe superiore. Sull'asse orizzontale le ore prima dell'istante attuale.")
+            } else {
+                Border::new().height(0.0).into()
+            },
             scaled(charts::plot(
                 608.0,
                 92.0,
@@ -1756,10 +1776,9 @@ pub(crate) fn help_panel(desc: &str) -> View {
 fn help_button(on_toggle: Callback<()>) -> View {
     Button::new()
         .on_click(on_toggle)
-        .width(34.0)
         .height(30.0)
-        .content("?")
-        .tooltip("Che cosa mostra questo pannello")
+        .content("?  Come si legge")
+        .tooltip("Spiega il grafico: cosa sono gli assi, i colori e le sigle")
 }
 
 pub(crate) fn card(title: &str, accent: Color, desc: &str, body: View, open: bool, on_toggle: Callback<()>) -> View {
@@ -1767,6 +1786,26 @@ pub(crate) fn card(title: &str, accent: Color, desc: &str, body: View, open: boo
 }
 
 /// Scheda con un pulsante aggiuntivo accanto a "?".
+/// Titolo di un grafico con il suo pulsantino: apre la spiegazione di quel
+/// singolo grafico, non dell'intero pannello.
+fn chart_title(text: &str, open: bool, on_toggle: Callback<()>) -> View {
+    StackPanel::new()
+        .orientation(Orientation::Horizontal)
+        .spacing(6.0)
+        .vertical_alignment(VerticalAlignment::Center)
+        .children((
+            TextBlock::new()
+                .text(text.to_string())
+                .font_size(10.5)
+                .foreground(MUTED),
+            Button::new()
+                .on_click(on_toggle)
+                .height(22.0)
+                .content(if open { "−" } else { "?" })
+                .tooltip("Come si legge questo grafico"),
+        ))
+}
+
 fn card_with_action(
     title: &str,
     accent: Color,
@@ -1898,6 +1937,19 @@ fn stat(label: &str, value: String, accent: Color) -> View {
             .font_weight(FontWeight::SEMI_BOLD)
             .foreground(accent),
     ))
+}
+
+/// Risorse del pulsante blu pieno: il tema WinUI non espone il colore, si
+/// sovrascrivono sfondo, testo, hover e stato premuto.
+pub(crate) fn blue_overrides() -> ResourceOverrides {
+    ResourceOverrides::new()
+        .set("ButtonBackground", Color::rgb(37, 99, 235))
+        .set("ButtonForeground", Color::rgb(255, 255, 255))
+        .set("ButtonBorderBrush", Color::rgb(37, 99, 235))
+        .set("ButtonBackgroundPointerOver", Color::rgb(29, 78, 216))
+        .set("ButtonBorderBrushPointerOver", Color::rgb(29, 78, 216))
+        .set("ButtonBackgroundPressed", Color::rgb(30, 64, 175))
+        .set("ButtonBorderBrushPressed", Color::rgb(30, 64, 175))
 }
 
 pub(crate) fn legend_item(color: Color, label: &str) -> View {

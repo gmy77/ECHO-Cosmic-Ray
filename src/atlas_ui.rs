@@ -267,7 +267,7 @@ impl AtlasState {
             );
         };
         StackPanel::new().spacing(16.0).children((
-            self.title(callbacks),
+            self.title(),
             self.controls(callbacks),
             self.map_card(ds, callbacks, help),
             self.heatmap_card(callbacks, help),
@@ -292,7 +292,7 @@ impl AtlasState {
             .children((self.back_button(callbacks),))
     }
 
-    fn title(&self, callbacks: &AtlasCallbacks) -> View {
+    fn title(&self) -> View {
         let title = StackPanel::new().spacing(1.0).children((
             TextBlock::new()
                 .text("ATLANTE DEI RAGGI COSMICI")
@@ -342,14 +342,11 @@ impl AtlasState {
             ));
 
         Grid::new()
-            .columns([GridLength::STAR, GridLength::Auto, GridLength::Auto])
+            .columns([GridLength::STAR, GridLength::Auto])
             .column_spacing(16.0)
             .children((
                 Border::new().vertical_alignment(VerticalAlignment::Center).content(title),
-                Border::new().vertical_alignment(VerticalAlignment::Center).content(status),
-                Border::new()
-                    .vertical_alignment(VerticalAlignment::Center)
-                    .content(self.back_button(callbacks)),
+                cell_r(1, status),
             ))
     }
 
@@ -929,16 +926,7 @@ impl Default for AtlasState {
 fn blue_button(label: &str, on_click: Callback<()>) -> View {
     Button::new()
         .style(ButtonStyle::Default)
-        .resource_overrides(
-            ResourceOverrides::new()
-                .set("ButtonBackground", Color::rgb(37, 99, 235))
-                .set("ButtonForeground", Color::rgb(255, 255, 255))
-                .set("ButtonBorderBrush", Color::rgb(37, 99, 235))
-                .set("ButtonBackgroundPointerOver", Color::rgb(29, 78, 216))
-                .set("ButtonBorderBrushPointerOver", Color::rgb(29, 78, 216))
-                .set("ButtonBackgroundPressed", Color::rgb(30, 64, 175))
-                .set("ButtonBorderBrushPressed", Color::rgb(30, 64, 175)),
-        )
+        .resource_overrides(crate::blue_overrides())
         .on_click(on_click)
         .content(label.to_string())
 }
