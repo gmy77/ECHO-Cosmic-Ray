@@ -12,6 +12,7 @@ atlas of historical GLE and Forbush events. Rust + WinUI.*
 ![Rust](https://img.shields.io/badge/Rust-2021-orange)
 ![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6)
 ![Versione](https://img.shields.io/badge/versione-0.3.0-blue)
+![Licenza](https://img.shields.io/badge/licenza-MIT-3DA639)
 ![Dati](https://img.shields.io/badge/dati-NMDB%20·%20NOAA%20·%20SILSO-2ea44f)
 
 ![Dashboard](docs/dashboard.png)
@@ -198,6 +199,14 @@ citati. I loghi servono solo a riconoscere la provenienza dei dati.
   operative, sanitarie o di radioprotezione servono fonti e strumenti
   certificati.
 
-## Copyright
+## Licenza
 
-Copyright (c) 2026 **PIGNOLO GIMMY**. Tutti i diritti riservati.
+Rilasciato sotto licenza **MIT**: puoi usare, modificare e ridistribuire il
+codice, anche commercialmente, tenendo il copyright e il testo della licenza.
+Vedi [LICENSE](LICENSE).
+
+Copyright (c) 2026 **PIGNOLO GIMMY**.
+
+I dati appartengono ai rispettivi enti (NMDB e i singoli osservatori, NOAA SWPC,
+WDC Kyoto, SILSO): la licenza MIT riguarda il codice di questa applicazione, non
+i dati che scarica.
