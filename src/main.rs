@@ -1781,6 +1781,17 @@ fn help_button(on_toggle: Callback<()>) -> View {
         .tooltip("Spiega il grafico: cosa sono gli assi, i colori e le sigle")
 }
 
+/// Variante compatta, per i riquadri piccoli dei valori: solo il punto
+/// interrogativo, la spiegazione resta nel tooltip e nel pannello.
+fn help_button_small(on_toggle: Callback<()>) -> View {
+    Button::new()
+        .on_click(on_toggle)
+        .width(30.0)
+        .height(28.0)
+        .content("?")
+        .tooltip("Come si legge questo valore")
+}
+
 pub(crate) fn card(title: &str, accent: Color, desc: &str, body: View, open: bool, on_toggle: Callback<()>) -> View {
     card_with_action(title, accent, desc, body, open, on_toggle, None)
 }
@@ -1893,7 +1904,7 @@ fn kpi_card(
                 .font_weight(FontWeight::SEMI_BOLD)
                 .foreground(MUTED)
                 .vertical_alignment(VerticalAlignment::Center),
-            cell_v(1, help_button(on_toggle)),
+            cell_v(1, help_button_small(on_toggle)),
         ));
 
     let sub = TextBlock::new()
