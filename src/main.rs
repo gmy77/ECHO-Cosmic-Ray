@@ -365,6 +365,9 @@ impl Dashboard {
             help_map: context.message(Message::ToggleHelp("atl-map".into())),
             help_multiples: context.message(Message::ToggleHelp("atl-multiples".into())),
             help_solar: context.message(Message::ToggleHelp("atl-solar".into())),
+            help_heatmap: context.message(Message::ToggleHelp("atl-heat".into())),
+            help_spectrum: context.message(Message::ToggleHelp("atl-spectrum".into())),
+            help_events: context.message(Message::ToggleHelp("atl-events".into())),
         };
         self.atlas.page(&callbacks, &self.help)
     }

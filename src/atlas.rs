@@ -371,6 +371,74 @@ pub fn load_live() -> Option<Dataset> {
 }
 
 // ---------------------------------------------------------------------------
+// Confronto fra eventi
+// ---------------------------------------------------------------------------
+
+/// Curva mediana della rete per un evento, allineata al picco.
+pub struct EventCurve {
+    /// Etichetta corta per la legenda, per esempio `GLE66` o `FD91`.
+    pub short: String,
+    pub gle: bool,
+    /// Coppie (ore rispetto al picco, variazione mediana in %).
+    pub points: Vec<(f64, f64)>,
+}
+
+/// Per ogni evento la mediana della rete, in ore rispetto al massimo |Δ|.
+///
+/// Serve a vedere a colpo d'occhio la differenza di forma: i GLE sono picchi
+/// stretti e asimmetrici, i cali di Forbush depressioni larghe e simmetriche.
+pub fn event_curves() -> Vec<EventCurve> {
+    let mut out = Vec::new();
+    for event in EVENTS {
+        let Some(dataset) = load_event(event) else {
+            continue;
+        };
+        let mut median = Vec::with_capacity(dataset.steps);
+        for step in 0..dataset.steps {
+            let mut values: Vec<f64> = (0..dataset.ncol())
+                .filter_map(|column| dataset.pct_at(step, column))
+                .collect();
+            if values.is_empty() {
+                median.push(f64::NAN);
+                continue;
+            }
+            values.sort_by(|a, b| a.total_cmp(b));
+            median.push(values[values.len() / 2]);
+        }
+        let peak = median
+            .iter()
+            .enumerate()
+            .filter(|(_, value)| value.is_finite())
+            .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
+            .map(|(step, _)| step)
+            .unwrap_or(0);
+        let hours = dataset.step as f64 / 3600.0;
+        let points = median
+            .iter()
+            .enumerate()
+            .filter(|(_, value)| value.is_finite())
+            .map(|(step, value)| ((step as f64 - peak as f64) * hours, *value))
+            .filter(|(hour, _)| hour.abs() <= 24.0)
+            .collect();
+        out.push(EventCurve {
+            short: short_name(event),
+            gle: matches!(event.kind, EventKind::Gle),
+            points,
+        });
+    }
+    out
+}
+
+fn short_name(event: &Event) -> String {
+    let digits: String = event.id.chars().filter(|c| c.is_ascii_digit()).collect();
+    if matches!(event.kind, EventKind::Gle) {
+        format!("GLE{digits}")
+    } else {
+        format!("FD{}", &digits[digits.len().saturating_sub(2)..])
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Colori e scala delle variazioni
 // ---------------------------------------------------------------------------
 
@@ -501,6 +569,23 @@ mod tests {
             let (_, min, max, count) = dataset.stats(dataset.steps / 2);
             assert!(count > 5, "{}", event.id);
             assert!(max >= min, "{}", event.id);
+        }
+    }
+
+    #[test]
+    fn curva_degli_eventi_allineata_al_picco() {
+        let curves = event_curves();
+        assert_eq!(curves.len(), EVENTS.len());
+        for curve in &curves {
+            assert!(!curve.points.is_empty(), "{}", curve.short);
+            assert!(curve.short.starts_with("GLE") || curve.short.starts_with("FD"),
+                    "{}", curve.short);
+            let peak = curve
+                .points
+                .iter()
+                .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
+                .expect("punto di picco");
+            assert!(peak.0.abs() <= 1.6, "{}: picco a {:.2} h", curve.short, peak.0);
         }
     }
 

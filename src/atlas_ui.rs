@@ -42,6 +42,15 @@ pub struct AtlasState {
     sprites: Vec<Arc<[u8]>>,
     /// Indici delle stazioni ordinati per rigidità di taglio crescente.
     order: Vec<usize>,
+    /// Heatmap dell'evento attivo (righe = stazioni con dato, colonne = tempo).
+    heat: Arc<[u8]>,
+    heat_rows: Vec<usize>,
+    heat_h: f64,
+    /// Confronto fra gli eventi: bitmap statica e legenda.
+    events_bmp: Arc<[u8]>,
+    curves: Vec<atlas::EventCurve>,
+    /// Spettro dell'istante: memoizzato per (sorgente, cursore).
+    spectrum: std::cell::RefCell<Option<(usize, usize, Arc<[u8]>)>>,
     solar: Arc<[u8]>,
 }
 
@@ -55,6 +64,9 @@ pub struct AtlasCallbacks {
     pub help_map: Callback<()>,
     pub help_multiples: Callback<()>,
     pub help_solar: Callback<()>,
+    pub help_heatmap: Callback<()>,
+    pub help_spectrum: Callback<()>,
+    pub help_events: Callback<()>,
 }
 
 impl AtlasState {
@@ -64,6 +76,8 @@ impl AtlasState {
         let events = EVENTS.iter().map(atlas::load_event).collect();
         let live = atlas::load_live();
         let solar = Arc::<[u8]>::from(atlas_draw::solar_bmp(&atlas::solar_series()));
+        let curves = atlas::event_curves();
+        let events_bmp = Arc::<[u8]>::from(atlas_draw::events_bmp(&curves));
         let live_status = if live.is_some() {
             "istantanea incorporata".to_string()
         } else {
@@ -83,6 +97,12 @@ impl AtlasState {
             events,
             sprites: Vec::new(),
             order,
+            heat: Arc::<[u8]>::from(Vec::new()),
+            heat_rows: Vec::new(),
+            heat_h: 0.0,
+            events_bmp,
+            curves,
+            spectrum: std::cell::RefCell::new(None),
             solar,
         };
         state.reset_cursor();
@@ -151,6 +171,7 @@ impl AtlasState {
     /// Ricalcola le bitmap dei piccoli multipli per la serie attiva.
     fn rebuild(&mut self) {
         self.sprites.clear();
+        self.spectrum.replace(None);
         let Some(ds) = self.dataset() else {
             return;
         };
@@ -163,7 +184,18 @@ impl AtlasState {
             };
             sprites.push(Arc::<[u8]>::from(atlas_draw::sparkline(&values, ds.scale_pct)));
         }
+        let heat_rows: Vec<usize> = self
+            .order
+            .iter()
+            .copied()
+            .filter(|station| ds.has_data(*station))
+            .collect();
+        let heat_h = atlas_draw::heatmap_height(heat_rows.len()) as f64;
+        let heat = Arc::<[u8]>::from(atlas_draw::heatmap_bmp(ds, &heat_rows));
         self.sprites = sprites;
+        self.heat_rows = heat_rows;
+        self.heat_h = heat_h;
+        self.heat = heat;
     }
 
     /// Sostituisce la serie live con quella appena scaricata.
@@ -237,7 +269,10 @@ impl AtlasState {
             self.title(),
             self.controls(callbacks),
             self.map_card(ds, callbacks, help),
+            self.heatmap_card(callbacks, help),
+            self.spectrum_card(callbacks, help),
             self.multiples_card(callbacks, help),
+            self.events_card(callbacks, help),
             self.solar_card(callbacks, help),
         ))
     }
@@ -575,6 +610,150 @@ impl AtlasState {
             scaled(Canvas::new().width(MAP_W).height(MAP_H).keyed_children(items)),
             legend,
             stats,
+        ))
+    }
+
+    fn heatmap_card(&self, callbacks: &AtlasCallbacks, help: &HashSet<String>) -> View {
+        card(
+            "HEATMAP · LA PROPAGAZIONE IN UN COLPO D'OCCHIO",
+            crate::GREEN,
+            "Una riga per stazione, ordinate dall'alto in basso per rigidità di taglio crescente; una colonna per passo. Il colore è la variazione percentuale: blu il calo, giallo e rosso l'aumento, grigio scuro il buco di dati. È la vista che i piccoli multipli non danno: qui si vede il fronte dell'evento mentre scende dalle stazioni polari a quelle equatoriali, e si vede dove la rete tace. La linea chiara verticale è l'istante scelto con il cursore.",
+            self.heatmap_body(),
+            help.contains("atl-heat"),
+            callbacks.help_heatmap.clone(),
+        )
+    }
+
+    fn heatmap_body(&self) -> View {
+        let width = atlas_draw::HEAT_W as f64;
+        let height = self.heat_h.max(1.0);
+        let mut items: Vec<KeyedView> = Vec::new();
+        items.push(KeyedView::new(
+            2000usize,
+            Image::new()
+                .source_data(EncodedImage::new(self.heat.clone()))
+                .stretch(Stretch::Fill)
+                .width(width)
+                .height(height)
+                .canvas_left(0.0)
+                .canvas_top(0.0),
+        ));
+        let steps = self.steps().max(1);
+        if steps > 1 {
+            let inner = width - 8.0 - atlas_draw::HEAT_PAD_L;
+            let x = atlas_draw::HEAT_PAD_L + self.cursor as f64 / (steps - 1) as f64 * inner;
+            items.push(KeyedView::new(
+                2001usize,
+                Rectangle::new()
+                    .width(2.0)
+                    .height(height)
+                    .fill(Color::rgb(226, 232, 240))
+                    .canvas_left(x - 1.0)
+                    .canvas_top(0.0),
+            ));
+        }
+        let step = self
+            .dataset()
+            .map(|d| if d.step <= 900 { "10 minuti" } else { "un'ora" })
+            .unwrap_or("un passo");
+        StackPanel::new().spacing(6.0).children((
+            scaled(Canvas::new().width(width).height(height).keyed_children(items)),
+            TextBlock::new()
+                .text(format!(
+                    "{} stazioni con dato · passo di {step}. In alto le polari (Rc bassa), in basso le equatoriali: la scala delle righe è la stessa dei piccoli multipli qui sotto."
+                , self.heat_rows.len()))
+                .font_size(10.5)
+                .foreground(crate::MUTED)
+                .text_wrapping(TextWrapping::Wrap),
+        ))
+    }
+
+    fn spectrum_card(&self, callbacks: &AtlasCallbacks, help: &HashSet<String>) -> View {
+        card(
+            "SPETTRO DI RIGIDITÀ · CHI RISPONDE E QUANTO",
+            crate::AMBER,
+            "Ogni quadratino è una stazione all'istante scelto: sull'asse orizzontale la rigidità di taglio in scala logaritmica, su quello verticale la variazione percentuale. La retta grigia è il fit Δ% = a − γ·ln(Rc). Se γ è positivo e grande, l'evento ha una forte componente di particelle poco energetiche e la risposta crolla passando alle stazioni equatoriali: è la firma dei GLE. Nei cali di Forbush γ resta piccolo, perché la depressione colpisce quasi tutta la rete. Il fit è indicativo quando le stazioni con dato sono poche.",
+            self.spectrum_body(),
+            help.contains("atl-spectrum"),
+            callbacks.help_spectrum.clone(),
+        )
+    }
+
+    fn spectrum_body(&self) -> View {
+        let Some(dataset) = self.dataset() else {
+            return crate::help_panel("Nessuna serie attiva.");
+        };
+        let points: Vec<(f64, f64)> = (0..STATIONS.len())
+            .filter_map(|station| {
+                let column = dataset.col_of(station)?;
+                let value = dataset.pct_at(self.cursor, column)?;
+                Some((STATIONS[station].rc, value))
+            })
+            .collect();
+        let fit = atlas_draw::spectrum_fit(&points);
+        let bmp = {
+            let mut cache = self.spectrum.borrow_mut();
+            match cache.as_ref() {
+                Some((source, cursor, bytes)) if *source == self.source && *cursor == self.cursor => {
+                    bytes.clone()
+                }
+                _ => {
+                    let bytes: Arc<[u8]> =
+                        atlas_draw::spectrum_bmp(&points, dataset.scale_pct, fit.as_ref()).into();
+                    *cache = Some((self.source, self.cursor, bytes.clone()));
+                    bytes
+                }
+            }
+        };
+        let summary = match &fit {
+            Some(fit) if points.len() >= 3 => format!(
+                "γ = {} · R² {} · {} stazioni con dato · scala verticale ±{} %",
+                it(-fit.b, 2),
+                it(fit.r2, 2),
+                points.len(),
+                it(dataset.scale_pct, 0)
+            ),
+            _ => "Meno di tre stazioni con dato: il fit non è significativo.".to_string(),
+        };
+        StackPanel::new().spacing(6.0).children((
+            Image::new()
+                .source_data(EncodedImage::new(bmp))
+                .stretch(Stretch::Uniform)
+                .width(atlas_draw::SPEC_W as f64)
+                .horizontal_alignment(HorizontalAlignment::Left),
+            TextBlock::new()
+                .text(summary)
+                .font_size(11.0)
+                .foreground(crate::SOFT)
+                .text_wrapping(TextWrapping::Wrap),
+        ))
+    }
+
+    fn events_card(&self, callbacks: &AtlasCallbacks, help: &HashSet<String>) -> View {
+        card(
+            "EVENTI A CONFRONTO · GLE E CALI DI FORBUSH",
+            crate::ROSE,
+            "I nove eventi dell'atlante sovrapposti, ognuno come mediana della rete e allineato al proprio picco. In ambra e rosa i GLE: picchi stretti, salita rapida, discesa più lenta. In azzurro e verde i cali di Forbush: depressioni larghe e quasi simmetriche, che durano un giorno o più. La forma racconta il fenomeno meglio di qualunque numero: i due tipi di evento non sono la stessa curva con il segno cambiato.",
+            self.events_body(),
+            help.contains("atl-events"),
+            callbacks.help_events.clone(),
+        )
+    }
+
+    fn events_body(&self) -> View {
+        let gle_count = self.curves.iter().filter(|curve| curve.gle).count();
+        let forbush_count = self.curves.len() - gle_count;
+        StackPanel::new().spacing(6.0).children((
+            scaled(
+                Image::new()
+                    .source_data(EncodedImage::new(self.events_bmp.clone()))
+                    .stretch(Stretch::Fill),
+            ),
+            TextBlock::new()
+                .text(format!("{gle_count} GLE e {forbush_count} cali di Forbush. Le curve sono mediane della rete, non di una singola stazione: servono a confrontare le forme, non le ampiezze assolute. Gli eventi del 1991 e del 2003 hanno meno stazioni, quindi una mediana più fragile."))
+                .font_size(10.5)
+                .foreground(crate::MUTED)
+                .text_wrapping(TextWrapping::Wrap),
         ))
     }
 
